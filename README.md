@@ -12,6 +12,8 @@ Compile
 ```
 cargo build --release
 ```
+Usage
+```
 merge_peaks --chrom-sizes <YOUR_CHROM_SIZE> --output <OUT_BED> <INPUT1> <INPUT2> <INPUT3>  --half-width 250
 ```
 
