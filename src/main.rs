@@ -32,6 +32,36 @@ struct Cli {
     half_width: u64,
 }
 
+/// Calculate the total signal of a set of peaks (sum of scores).
+/// Treats missing scores as zero.
+fn calculate_total_signal(peaks: &[NarrowPeak]) -> u64 {
+    peaks
+        .iter()
+        .filter_map(|peak| peak.p_value)
+        .map(|score| score)
+        .sum()
+}
+
+/// Normalize the peak scores to "score per million" (SPM).
+/// Consumes the peaks and returns a new Vec<NarrowPeak> with scores recalculated.
+
+fn spm(mut peaks: Vec<NarrowPeak>) -> Result<Vec<NarrowPeak>> {
+    let total_signal = calculate_total_signal(&peaks);
+
+    if total_signal == 0 {
+        // Prevent division by zero; just return peaks as-is.
+        return Ok(peaks);
+    }
+
+    for peak in peaks.iter_mut() {
+        let normalized_score = (peak.p_value / total_signal * 1_000_000).unwrap_or(0.0);
+
+        peak.p_value = normalized_score;
+    }
+
+    Ok(peaks)
+}
+
 fn format_optional_string(value: Option<String>) -> String {
     value.unwrap_or_else(|| ".".to_string())
 }
@@ -82,14 +112,27 @@ pub fn merge_peaks<I>(peaks: I, half_window_size: u64) -> impl Iterator<Item = V
 where
     I: Iterator<Item = NarrowPeak>,
 {
-    fn iterative_merge(mut peaks: Vec<NarrowPeak>) -> Vec<NarrowPeak> {
+    fn iterative_merge(mut peaks: Vec<NarrowPeak>,score_threshold: u8,overlap_threshold: u8) -> Vec<NarrowPeak> {
         let mut result = Vec::new();
         while !peaks.is_empty() {
-            let best_peak = peaks.iter()
-                .max_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap()).unwrap()
-                .clone();
+            let best_peak_idx = peaks.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.p_value.partial_cmp(&b.p_value).unwrap())
+                .unwrap()
+                .0;
+            let mut best_peak = peaks.remove(best_peak_idx);
+            
+            // Count the number of peaks that overlap with the best peak
+            let overlap_count = peaks.iter()
+                .filter(|x| x.n_overlap(&best_peak) > 0)
+                .count();
+            
+            // Remove overlapping peaks
             peaks = peaks.into_iter().filter(|x| x.n_overlap(&best_peak) == 0).collect();
-            result.push(best_peak);
+            
+            if overlap_count >= overlap_threshold && best_peak.p_value >= score_threshold {
+                result.push(best_peak);
+            }
         }
         result
     }
@@ -106,7 +149,7 @@ where
         .build().unwrap()
         .sort_by(input, BEDLike::compare).unwrap()
         .map(|x| x.unwrap())
-        .merge_sorted_bed_with(iterative_merge)
+        .merge_sorted_bed_with(|peaks| iterative_merge(peaks, score_threshold, overlap_threshold))
 }
 
 fn read_bed(path: &PathBuf) -> Result<Vec<NarrowPeak>> {
