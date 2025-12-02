@@ -30,6 +30,9 @@ struct Cli {
     /// Half window size (bp) used to expand summits before merging
     #[arg(long, default_value_t = 250)]
     half_width: u64,
+
+    #[arg(long, default_value_t = true)]
+    normalize: bool,
 }
 
 /// Calculate the total signal of a set of peaks (sum of scores).
@@ -81,7 +84,6 @@ pub fn merge_peaks_narrowpeak(
     let peak_list: Vec<_> = peaks
         .into_iter()
         .collect::<Vec<_>>();
-
     let chrom_sizes = chrom_sizes.into_iter().collect();
     let merged_peaks: Vec<_> = merge_peaks(
             peak_list.iter().flat_map(|x| x.1.clone()), 
@@ -115,22 +117,13 @@ where
     fn iterative_merge(mut peaks: Vec<NarrowPeak>,score_threshold: u8,overlap_threshold: u8) -> Vec<NarrowPeak> {
         let mut result = Vec::new();
         while !peaks.is_empty() {
-            let best_peak_idx = peaks.iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.p_value.partial_cmp(&b.p_value).unwrap())
-                .unwrap()
-                .0;
-            let mut best_peak = peaks.remove(best_peak_idx);
-            
-            // Count the number of peaks that overlap with the best peak
-            let overlap_count = peaks.iter()
-                .filter(|x| x.n_overlap(&best_peak) > 0)
-                .count();
-            
-            // Remove overlapping peaks
+            let best_peak = peaks.iter()
+                .max_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap()).unwrap()
+                .clone();
+            previous_size = peaks.len();
             peaks = peaks.into_iter().filter(|x| x.n_overlap(&best_peak) == 0).collect();
-            
-            if overlap_count >= overlap_threshold && best_peak.p_value >= score_threshold {
+            latter_size = previous_size - peaks.len() - 1; // Remove self from the count
+            if latter_size >= overlap_threshold && best_peak.p_value >= score_threshold {
                 result.push(best_peak);
             }
         }
@@ -348,7 +341,11 @@ fn main() -> Result<()> {
         let peaks = read_bed(bed_path)?;
         peaks_by_source.insert(bed_path.display().to_string(), peaks);
     }
-
+    if cli.normalize {
+        for peaks in peaks_by_source.values_mut() {
+            *peaks = spm(peaks.clone())?;
+        }
+    }
     let merged = merge_peaks_narrowpeak(peaks_by_source, chrom_sizes, cli.half_width)?;
 
     write_bed(&cli.output, &merged)?;
