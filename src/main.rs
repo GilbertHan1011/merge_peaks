@@ -33,33 +33,29 @@ struct Cli {
 
     #[arg(long, default_value_t = true)]
     normalize: bool,
+    #[arg(long, default_value_t = 0.0)]
+    score_threshold: f64,
+    #[arg(long, default_value_t = 0)]
+    overlap_threshold: usize,
 }
 
-/// Calculate the total signal of a set of peaks (sum of scores).
-/// Treats missing scores as zero.
-fn calculate_total_signal(peaks: &[NarrowPeak]) -> u64 {
-    peaks
-        .iter()
-        .filter_map(|peak| peak.p_value)
-        .map(|score| score)
-        .sum()
-}
 
 /// Normalize the peak scores to "score per million" (SPM).
 /// Consumes the peaks and returns a new Vec<NarrowPeak> with scores recalculated.
 
 fn spm(mut peaks: Vec<NarrowPeak>) -> Result<Vec<NarrowPeak>> {
-    let total_signal = calculate_total_signal(&peaks);
 
-    if total_signal == 0 {
+    let total_signal: f64 = peaks.iter().filter_map(|p| p.p_value).sum();
+
+    if total_signal == 0.0 {
         // Prevent division by zero; just return peaks as-is.
         return Ok(peaks);
     }
-
-    for peak in peaks.iter_mut() {
-        let normalized_score = (peak.p_value / total_signal * 1_000_000).unwrap_or(0.0);
-
-        peak.p_value = normalized_score;
+    let factor = 1_000_000.0 / total_signal;
+    for peak in &mut peaks {
+        if let Some(score) = peak.p_value.as_mut() {
+            *score *= factor;
+        }
     }
 
     Ok(peaks)
@@ -80,6 +76,8 @@ pub fn merge_peaks_narrowpeak(
     peaks: HashMap<String, Vec<NarrowPeak>>,
     chrom_sizes: HashMap<String, u64>,
     half_width: u64,
+    score_threshold: f64,
+    overlap_threshold: usize,
 ) -> Result<Vec<NarrowPeak>> {
     let peak_list: Vec<_> = peaks
         .into_iter()
@@ -87,7 +85,7 @@ pub fn merge_peaks_narrowpeak(
     let chrom_sizes = chrom_sizes.into_iter().collect();
     let merged_peaks: Vec<_> = merge_peaks(
             peak_list.iter().flat_map(|x| x.1.clone()), 
-            half_width)
+            half_width, score_threshold, overlap_threshold)
         .flatten()
         .map(|x| clip_peak(x, &chrom_sizes))
         .collect();
@@ -110,20 +108,20 @@ pub fn clip_peak(mut peak: NarrowPeak, chrom_sizes: &HashMap<String, u64>) -> Na
 }
 
 
-pub fn merge_peaks<I>(peaks: I, half_window_size: u64) -> impl Iterator<Item = Vec<NarrowPeak>>
+pub fn merge_peaks<I>(peaks: I, half_window_size: u64, score_threshold: f64, overlap_threshold: usize) -> impl Iterator<Item = Vec<NarrowPeak>>
 where
     I: Iterator<Item = NarrowPeak>,
 {
-    fn iterative_merge(mut peaks: Vec<NarrowPeak>,score_threshold: u8,overlap_threshold: u8) -> Vec<NarrowPeak> {
+    fn iterative_merge(mut peaks: Vec<NarrowPeak>,score_threshold: f64,overlap_threshold: usize) -> Vec<NarrowPeak> {
         let mut result = Vec::new();
         while !peaks.is_empty() {
             let best_peak = peaks.iter()
                 .max_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap()).unwrap()
                 .clone();
-            previous_size = peaks.len();
+            let previous_size = peaks.len();
             peaks = peaks.into_iter().filter(|x| x.n_overlap(&best_peak) == 0).collect();
-            latter_size = previous_size - peaks.len() - 1; // Remove self from the count
-            if latter_size >= overlap_threshold && best_peak.p_value >= score_threshold {
+            let latter_size = previous_size - peaks.len() - 1; // Remove self from the count
+            if latter_size >= overlap_threshold && best_peak.p_value.unwrap_or(0.0) >= score_threshold {
                 result.push(best_peak);
             }
         }
@@ -142,7 +140,7 @@ where
         .build().unwrap()
         .sort_by(input, BEDLike::compare).unwrap()
         .map(|x| x.unwrap())
-        .merge_sorted_bed_with(|peaks| iterative_merge(peaks, score_threshold, overlap_threshold))
+        .merge_sorted_bed_with(move |peaks| iterative_merge(peaks, score_threshold, overlap_threshold))
 }
 
 fn read_bed(path: &PathBuf) -> Result<Vec<NarrowPeak>> {
@@ -346,10 +344,44 @@ fn main() -> Result<()> {
             *peaks = spm(peaks.clone())?;
         }
     }
-    let merged = merge_peaks_narrowpeak(peaks_by_source, chrom_sizes, cli.half_width)?;
+    let merged = merge_peaks_narrowpeak(peaks_by_source, chrom_sizes, cli.half_width, cli.score_threshold, cli.overlap_threshold)?;
 
     write_bed(&cli.output, &merged)?;
     eprintln!("Merged {} peaks written to {:?}", merged.len(), cli.output);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    // test spm
+    #[test]
+    fn test_spm() {
+        let peak1 = NarrowPeak::from_str("chr1\t100\t200\tname1\t0\t.\t100\t100\t100\t100").unwrap();
+        let peak2 = NarrowPeak::from_str("chr1\t100\t200\tname2\t0\t.\t100\t100\t100\t100").unwrap();
+        let peaks = vec![peak1, peak2];
+        let normalized = spm(peaks).unwrap();
+        assert_eq!(normalized.len(), 2);
+        assert_eq!(normalized[0].p_value, Some(500_000.0));
+        assert_eq!(normalized[1].p_value, Some(500_000.0));
+    }
+
+    #[test]
+    fn test_merge_peaks() {
+        let peaks = vec![
+            NarrowPeak::from_str("chr1\t100\t200\tname1\t0\t.\t100\t100\t100\t100").unwrap(),
+            NarrowPeak::from_str("chr1\t105\t205\tname2\t0\t.\t100\t200\t100\t100").unwrap(),
+            NarrowPeak::from_str("chr1\t110\t210\tname3\t0\t.\t100\t300\t100\t100").unwrap(),
+            NarrowPeak::from_str("chr1\t115\t215\tname4\t0\t.\t100\t100\t100\t100").unwrap(),
+            NarrowPeak::from_str("chr2\t115\t215\tname5\t0\t.\t100\t100\t100\t100").unwrap(),
+        ];
+        let merged: Vec<NarrowPeak> = merge_peaks(peaks.into_iter(), 250, 0.0, 1)
+            .flatten()
+            .collect();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].p_value, Some(300.0));
+    }
 }

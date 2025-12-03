@@ -1,7 +1,7 @@
 [package]
 name = "merge_peaks"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -11,3 +11,4 @@ clap = { version = "4.5.18", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 flate2 = "1.0"
+
