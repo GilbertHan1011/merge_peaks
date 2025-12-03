@@ -6,6 +6,8 @@ This script is aimed to merge multiple peak sets iteratively. This method is fir
 
 Most codes are borrowed from [SnapATAC2](https://scverse.org/SnapATAC2).
 
+Default, score per million normalization was used. And if you want to find peak replicated in samples, setting overlap-threshold to 1 or more. 
+
 ## Usage
 
 Compile
@@ -14,6 +16,6 @@ cargo build --release
 ```
 Usage
 ```
-merge_peaks --chrom-sizes <YOUR_CHROM_SIZE> --output <OUT_BED> <INPUT1> <INPUT2> <INPUT3>  --half-width 250
+merge_peaks --chrom-sizes <YOUR_CHROM_SIZE> --output <OUT_BED> <INPUT1> <INPUT2> <INPUT3>  --half-width 250 --score-threshold 5.0 --overlap-threshold 1
 ```
 
